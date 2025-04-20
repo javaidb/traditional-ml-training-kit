@@ -1,0 +1,27 @@
+version: '3'
+
+services:
+  xgboost-mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    ports:
+      - "5000:5000"
+    command: mlflow server --host 0.0.0.0
+    networks:
+      - ml-network
+
+  xgboost-trainer:
+    build:
+      context: ../..
+      dockerfile: trad_ml_example/xgboost_regression/Dockerfile
+    environment:
+      - MLFLOW_TRACKING_URI=http://xgboost-mlflow:5000
+    volumes:
+      - ./temp_data:/app/trad_ml_example/xgboost_regression/temp_data
+    depends_on:
+      - xgboost-mlflow
+    networks:
+      - ml-network
+
+networks:
+  ml-network:
+    driver: bridge 
