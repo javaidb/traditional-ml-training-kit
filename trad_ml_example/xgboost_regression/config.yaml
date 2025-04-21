@@ -13,7 +13,7 @@ model:
     colsample_bytree: 0.8
 
 data_module:
-  csv_path: "/app/trad_ml_example/xgboost_regression/temp_data/housing_data.csv"
+  csv_path: "temp_data/housing_data.csv"
   target_column: "price"
   categorical_columns:
     - "neighborhood"
