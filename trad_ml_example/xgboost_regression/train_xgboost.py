@@ -3,6 +3,8 @@ from trad_ml_training_kit.core.utils import load_config, update_config
 from trad_ml_training_kit.core.training import ModelTrainer
 import mlflow
 import yaml
+from datetime import datetime
+import pytz
 
 def main():
     # Load base configuration
@@ -19,8 +21,13 @@ def main():
     }
     config = update_config(config, config_updates)
     
-    # Set MLflow tracking URI using container name
-    mlflow.set_tracking_uri("http://mlflow:5000")
+    # Set MLflow tracking URI using environment variable or default to mlflow service
+    mlflow_uri = os.getenv('MLFLOW_TRACKING_URI', 'http://mlflow:5000')
+    mlflow.set_tracking_uri(mlflow_uri)
+    
+    # Set the experiment name from config
+    experiment_name = config['experiment']['name']
+    mlflow.set_experiment(experiment_name)
     
     # Train model
     trainer = ModelTrainer(config=config)
