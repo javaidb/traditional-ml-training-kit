@@ -1,6 +1,8 @@
 import os
 from trad_ml_training_kit.core.utils import load_config, update_config
 from trad_ml_training_kit.core.training import ModelTrainer
+import mlflow
+import yaml
 
 def main():
     # Load base configuration
@@ -16,6 +18,9 @@ def main():
         }
     }
     config = update_config(config, config_updates)
+    
+    # Set MLflow tracking URI using container name
+    mlflow.set_tracking_uri("http://mlflow:5000")
     
     # Train model
     trainer = ModelTrainer(config=config)
