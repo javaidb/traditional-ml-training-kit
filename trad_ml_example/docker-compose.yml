@@ -1,0 +1,26 @@
+services:
+  mlflow:
+    container_name: ml_training_kit_mlflow
+    image: ghcr.io/mlflow/mlflow:latest
+    ports:
+      - "5000:5000"
+    command: mlflow server --host 0.0.0.0
+    networks:
+      - ml-network
+
+  ml-trainer:
+    container_name: ml_training_kit_trainer
+    build:
+      context: ..
+      dockerfile: trad_ml_example/Dockerfile
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - GIT_PYTHON_REFRESH=quiet
+    depends_on:
+      - mlflow
+    networks:
+      - ml-network
+
+networks:
+  ml-network:
+    name: ml_training_kit_network
