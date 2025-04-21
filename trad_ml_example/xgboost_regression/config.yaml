@@ -1,7 +1,8 @@
 experiment:
-  name: "xgboost_regression_example"
+  name: "xgboost_housing_price_prediction"
   task: "regression"
   dataset: "housing_data"
+  include_date_in_run_name: true
 
 model:
   type: "xgboost"
