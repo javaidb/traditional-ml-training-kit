@@ -32,7 +32,8 @@ class DataHandler:
             test_ratio: Ratio of test data
             random_state: Random state for reproducibility
         """
-        self.csv_path = csv_path
+        # Handle relative paths by joining with current working directory
+        self.csv_path = os.path.join(os.getcwd(), csv_path) if not os.path.isabs(csv_path) else csv_path
         self.target_column = target_column
         self.categorical_columns = categorical_columns or []
         self.numerical_columns = numerical_columns
@@ -45,8 +46,8 @@ class DataHandler:
         self.scalers = {}
         self.encoders = {}
         
-        if not os.path.exists(csv_path):
-            raise FileNotFoundError(f"CSV file not found: {csv_path}")
+        if not os.path.exists(self.csv_path):
+            raise FileNotFoundError(f"CSV file not found: {self.csv_path} (working directory: {os.getcwd()})")
         if not abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6:
             raise ValueError("Train, validation, and test ratios must sum to 1.0")
     
