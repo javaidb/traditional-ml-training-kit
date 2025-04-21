@@ -21,6 +21,46 @@ XGBoost is ideal when:
    - Want to squeeze out extra performance gains
    - Have computational resources for parameter tuning
 
+## When NOT to Use XGBoost
+
+Avoid XGBoost when:
+
+1. **Extrapolation is Required**:
+   - Need to predict values beyond the training data range
+   - Working with time series data showing strong trends
+   - Forecasting future values that may exceed historical bounds
+   - Consider neural networks or specialized time series models instead
+
+2. **Interpretability is Critical**:
+   - Need to explain every prediction in detail
+   - Stakeholders require simple, linear relationships
+   - Regulatory compliance requires transparent models
+   - Consider linear/logistic regression instead
+
+3. **Resource Constraints**:
+   - Limited computational resources
+   - Need very fast inference times
+   - Memory usage is strictly limited
+   - Consider simpler models like decision trees or linear models
+
+4. **Small Datasets**:
+   - Very small training set (< 1000 samples)
+   - Risk of overfitting is high
+   - Limited validation data
+   - Consider simpler models with fewer parameters
+
+5. **Complex Parameter Tuning is Not Feasible**:
+   - Limited time for model optimization
+   - Lack of expertise in hyperparameter tuning
+   - Need quick prototyping
+   - Consider scikit-learn's simpler implementations
+
+6. **High-Dimensional Sparse Data**:
+   - Working with very sparse matrices
+   - Text data with high dimensionality
+   - Many categorical variables with high cardinality
+   - Consider specialized text models or dimensionality reduction
+
 ## Data Format Requirements
 
 The expected CSV format should include:
