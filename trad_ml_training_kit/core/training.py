@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, Callable, List
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import logging
 from .models import get_model_by_name
-from .data_handler import DataHandler
+from .data import DataModule
 from .logging import MLflowLogger
 from datetime import datetime
 import pytz
@@ -110,14 +110,12 @@ class ModelTrainer:
         
         # Create and train model
         model = get_model_by_name(model_type, params)
-        model.fit(self.data_handler.X_train, self.data_handler.y_train)
+        X_train, y_train = self.data_module.get_train_data()
+        X_val, y_val = self.data_module.get_val_data()
+        model.fit(X_train, y_train)
         
         # Evaluate on validation set
-        metrics = self._evaluate_model(
-            model,
-            self.data_handler.X_val,
-            self.data_handler.y_val
-        )
+        metrics = self._evaluate_model(model, X_val, y_val)
         
         # Log trial metrics
         self.mlflow_logger.log_metrics(metrics, step=trial.number)
@@ -127,18 +125,19 @@ class ModelTrainer:
 
     def train(self) -> Any:
         """Train the model with hyperparameter optimization."""
-        # Set up data handler
-        data_config = self.config['data_module']
-        self.data_handler = DataHandler(
-            csv_path=data_config['csv_path'],
-            target_column=data_config['target_column'],
-            categorical_columns=data_config.get('categorical_columns'),
-            numerical_columns=data_config.get('numerical_columns'),
-            train_ratio=data_config.get('train_ratio', 0.7),
-            val_ratio=data_config.get('val_ratio', 0.15),
-            test_ratio=data_config.get('test_ratio', 0.15)
-        )
-        self.data_handler.setup()
+        # Set up data module
+        self.data_module = DataModule(self.config)
+        
+        # Prepare data
+        (
+            X_train,
+            X_val,
+            X_test,
+            y_train,
+            y_val,
+            y_test,
+            feature_names
+        ) = self.data_module.prepare_data()
         
         # Start MLflow run using the logger
         with self.mlflow_logger:
@@ -146,17 +145,17 @@ class ModelTrainer:
             
             # Log data config
             self.mlflow_logger.log_params({
-                'data_path': data_config['csv_path'],
-                'target_column': data_config['target_column'],
-                'train_ratio': data_config.get('train_ratio', 0.7),
-                'val_ratio': data_config.get('val_ratio', 0.15),
-                'test_ratio': data_config.get('test_ratio', 0.15),
-                'n_features': len(self.data_handler.feature_names),
-                'n_samples': len(self.data_handler.X_train) + len(self.data_handler.X_val) + len(self.data_handler.X_test)
+                'data_path': self.config['data_module']['csv_path'],
+                'target_column': self.config['data_module']['target_column'],
+                'train_ratio': self.config['data_module'].get('validation', {}).get('train_ratio', 0.7),
+                'val_ratio': self.config['data_module'].get('validation', {}).get('val_ratio', 0.15),
+                'test_ratio': self.config['data_module'].get('validation', {}).get('test_ratio', 0.15),
+                'n_features': len(feature_names),
+                'n_samples': len(X_train) + len(X_val) + len(X_test)
             })
             
             # Log feature names
-            self.mlflow_logger.log_params({'feature_names': ','.join(self.data_handler.feature_names)})
+            self.mlflow_logger.log_params({'feature_names': ','.join(feature_names)})
             
             # Hyperparameter optimization
             if self.config['trainer']['hyperparameter_tuning']['enabled']:
@@ -178,46 +177,50 @@ class ModelTrainer:
             
             # Train final model with best parameters
             model = get_model_by_name(self.config['model']['type'], best_params)
-            model.fit(self.data_handler.X_train, self.data_handler.y_train)
+            model.fit(X_train, y_train)
             
             # Evaluate model
             train_metrics = self._evaluate_model(
                 model,
-                self.data_handler.X_train,
-                self.data_handler.y_train,
+                X_train,
+                y_train,
                 prefix='train_'
             )
             val_metrics = self._evaluate_model(
                 model,
-                self.data_handler.X_val,
-                self.data_handler.y_val,
+                X_val,
+                y_val,
                 prefix='val_'
             )
             test_metrics = self._evaluate_model(
                 model,
-                self.data_handler.X_test,
-                self.data_handler.y_test,
+                X_test,
+                y_test,
                 prefix='test_'
             )
             
             # Log all metrics
-            all_metrics = {**train_metrics, **val_metrics, **test_metrics}
+            all_metrics = {
+                **train_metrics,
+                **val_metrics,
+                **test_metrics
+            }
             self.mlflow_logger.log_metrics(all_metrics)
             
             # Log prediction plots
             self.mlflow_logger.log_prediction_plots(
-                self.data_handler.y_train,
-                model.predict(self.data_handler.X_train),
+                y_train,
+                model.predict(X_train),
                 'train'
             )
             self.mlflow_logger.log_prediction_plots(
-                self.data_handler.y_val,
-                model.predict(self.data_handler.X_val),
+                y_val,
+                model.predict(X_val),
                 'val'
             )
             self.mlflow_logger.log_prediction_plots(
-                self.data_handler.y_test,
-                model.predict(self.data_handler.X_test),
+                y_test,
+                model.predict(X_test),
                 'test'
             )
             
@@ -225,7 +228,7 @@ class ModelTrainer:
             if hasattr(model, 'get_feature_importance'):
                 self.mlflow_logger.log_feature_importance(
                     model.get_feature_importance(),
-                    self.data_handler.feature_names
+                    feature_names
                 )
             
             # Log model with signature
@@ -233,7 +236,7 @@ class ModelTrainer:
                 self.mlflow_logger.log_model(
                     model=model.model,
                     model_name="model",
-                    input_example=self.data_handler.X_train.iloc[:5],
+                    input_example=X_train.iloc[:5],
                     registered_model_name=f"{self.config['model']['type']}_{self.experiment_name}"
                 )
             except Exception as e:
