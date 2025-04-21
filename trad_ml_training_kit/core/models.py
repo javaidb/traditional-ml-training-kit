@@ -45,7 +45,7 @@ class XGBoostModel(BaseModel):
     
     def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
         """Fit XGBoost model."""
-        self.feature_names = X.columns
+        self.feature_names = X.columns.tolist()
         self.model.fit(X, y)
     
     def predict(self, X: pd.DataFrame) -> np.ndarray:
