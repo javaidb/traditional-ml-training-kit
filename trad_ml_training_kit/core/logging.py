@@ -8,6 +8,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import optuna
 import logging
+import tempfile
+import os
 
 class MLflowLogger:
     """MLflow experiment tracking wrapper with advanced visualization and logging capabilities."""
@@ -300,10 +302,14 @@ class MLflowLogger:
             # Log the plot
             mlflow.log_figure(fig, "optimization_history.html")
             
-            # Log optimization history CSV
-            optimization_history = pd.DataFrame(study.trials_dataframe())
-            optimization_history.to_csv('optimization_history.csv')
-            mlflow.log_artifact('optimization_history.csv')
+            # Log optimization history CSV using a temporary file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_file:
+                optimization_history = pd.DataFrame(study.trials_dataframe())
+                optimization_history.to_csv(temp_file.name)
+                mlflow.log_artifact(temp_file.name, "optimization_history.csv")
+                
+            # Clean up temporary file
+            os.unlink(temp_file.name)
             
         except Exception as e:
             self.logger.warning(f"Could not log optimization history plot: {str(e)}")
