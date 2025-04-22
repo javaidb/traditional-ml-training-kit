@@ -10,6 +10,13 @@ from .data import DataModule
 from .logging import MLflowLogger
 from datetime import datetime
 import pytz
+import shutil
+import os
+from pathlib import Path
+import requests
+import time
+
+logger = logging.getLogger(__name__)
 
 class ModelTrainer:
     """Trainer class for traditional ML models."""
@@ -19,16 +26,13 @@ class ModelTrainer:
         config: Dict[str, Any],
         experiment_name: Optional[str] = None
     ):
-        """
-        Initialize the trainer.
-        
-        Args:
-            config: Configuration dictionary
-            experiment_name: Optional MLflow experiment name override
-        """
+        """Initialize trainer."""
         self.config = config
         self.experiment_name = experiment_name or config['experiment']['name']
         self.logger = logging.getLogger(__name__)
+        
+        # Verify MLflow connection
+        self._verify_mlflow_connection()
         
         # Initialize MLflow logger
         self.mlflow_logger = MLflowLogger(
@@ -36,6 +40,31 @@ class ModelTrainer:
             experiment_tags=config.get('experiment', {}).get('tags', {}),
             model_artifact_path=config.get('model', {}).get('artifact_path', 'model')
         )
+    
+    def _verify_mlflow_connection(self, max_retries: int = 5) -> None:
+        """Verify connection to MLflow server.
+        
+        Args:
+            max_retries: Maximum number of connection attempts
+        
+        Raises:
+            ConnectionError: If unable to connect to MLflow server
+        """
+        mlflow_uri = os.getenv('MLFLOW_TRACKING_URI', 'http://localhost:5000')
+        self.logger.info(f"Verifying connection to MLflow server at {mlflow_uri}")
+        
+        for i in range(max_retries):
+            try:
+                response = requests.get(f"{mlflow_uri}/health")
+                if response.status_code == 200:
+                    self.logger.info("Successfully connected to MLflow server")
+                    return
+            except requests.exceptions.RequestException as e:
+                self.logger.warning(f"Attempt {i+1}/{max_retries} failed: {str(e)}")
+                if i < max_retries - 1:
+                    time.sleep(2 ** i)  # Exponential backoff
+        
+        raise ConnectionError(f"Failed to connect to MLflow server at {mlflow_uri}")
     
     def _get_metric_functions(self) -> Dict[str, Callable]:
         """Get metric functions based on task type."""
@@ -156,6 +185,36 @@ class ModelTrainer:
             
             # Log feature names
             self.mlflow_logger.log_params({'feature_names': ','.join(feature_names)})
+            
+            # Log data distribution plots
+            try:
+                dist_dir = self.data_module.distribution_plots_dir
+                if not os.path.exists(dist_dir):
+                    raise FileNotFoundError(f"Distribution plots directory not found: {dist_dir}")
+                
+                self.logger.info(f"Logging data distribution plots from {dist_dir}")
+                self.logger.debug(f"Directory contents before logging: {os.listdir(dist_dir)}")
+                
+                # Verify MLflow artifact logging is working
+                test_file = os.path.join(dist_dir, "test.txt")
+                with open(test_file, "w") as f:
+                    f.write("Test artifact logging")
+                
+                mlflow.log_artifact(test_file, "data_distributions")
+                self.logger.info("Test artifact logging successful")
+                
+                # Log all distribution plots
+                mlflow.log_artifacts(dist_dir, "data_distributions")
+                self.logger.info("Successfully logged data distribution plots to MLflow")
+                
+                # Clean up temporary directory
+                shutil.rmtree(dist_dir)
+                self.logger.info(f"Cleaned up temporary directory: {dist_dir}")
+            except Exception as e:
+                self.logger.error(f"Failed to log data distribution plots: {str(e)}")
+                self.logger.error(f"MLflow tracking URI: {mlflow.get_tracking_uri()}")
+                self.logger.error(f"Current working directory: {os.getcwd()}")
+                raise
             
             # Hyperparameter optimization
             if self.config['trainer']['hyperparameter_tuning']['enabled']:
