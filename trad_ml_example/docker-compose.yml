@@ -7,6 +7,9 @@ services:
     command: mlflow server --host 0.0.0.0
     networks:
       - ml-network
+    volumes:
+      - ./mlruns:/mlruns  # Persist MLflow data
+      - ./mlartifacts:/mlartifacts  # Persist MLflow artifacts
 
   ml-trainer:
     container_name: ml_training_kit_trainer
@@ -20,6 +23,9 @@ services:
       - mlflow
     networks:
       - ml-network
+    volumes:
+      - ..:/app  # Mount the entire project directory
+      - ./temp_data:/app/trad_ml_example/temp_data  # Mount data directory
 
 networks:
   ml-network:
