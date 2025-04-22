@@ -7,8 +7,12 @@ from sklearn.model_selection import train_test_split
 import logging
 from pathlib import Path
 import os
+import tempfile
+import shutil
+from datetime import datetime
 
 from .preprocessing import DataPreprocessor
+from .visualization import DataVisualizer
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,10 @@ class DataModule:
         self.data_config = config['data_module']
         self.preprocessor = DataPreprocessor(config)
         self.feature_names: Optional[List[str]] = None
+        
+        # Store original data for visualization
+        self.original_data: Optional[pd.DataFrame] = None
+        self.processed_data: Optional[pd.DataFrame] = None
         
         # Handle relative paths by joining with current working directory
         self.csv_path = os.path.join(os.getcwd(), self.data_config['csv_path']) \
@@ -120,6 +128,90 @@ class DataModule:
         
         return df
     
+    def _create_distribution_plots(self) -> str:
+        """Create distribution plots for features and target.
+        
+        Returns:
+            str: Path to the directory containing the plots
+        """
+        if self.original_data is None or self.processed_data is None:
+            raise ValueError("Data not prepared. Call prepare_data first.")
+            
+        # Create temporary directory in /tmp for better Docker compatibility
+        temp_dir = "/tmp/data_distributions_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs(temp_dir, exist_ok=True)
+        logger.info(f"Created temporary directory for plots: {temp_dir}")
+        
+        visualizer = DataVisualizer(temp_dir)
+        
+        try:
+            # Plot numerical features
+            for col in self.data_config['numerical_columns']:
+                # Get outlier mask if available
+                outlier_mask = None
+                if hasattr(self.preprocessor, 'outlier_masks') and col in self.preprocessor.outlier_masks:
+                    outlier_mask = self.preprocessor.outlier_masks[col]
+                
+                # Get missing value mask if available
+                missing_mask = self.original_data[col].isnull()
+                
+                visualizer.plot_numerical_distribution(
+                    data=self.processed_data,
+                    column=col,
+                    outlier_mask=outlier_mask if hasattr(self.preprocessor, 'outlier_masks') and col in self.preprocessor.outlier_masks else None,
+                    original_data=self.original_data[col]
+                )
+            
+            # Plot categorical features
+            for col in self.data_config['categorical_columns']:
+                # Get encoding map if available
+                encoding_map = None
+                if hasattr(self.preprocessor, 'encoders') and col in self.preprocessor.encoders:
+                    encoding_map = self.preprocessor.encoders[col]
+                
+                visualizer.plot_categorical_distribution(
+                    data=self.processed_data,
+                    column=col,
+                    encoding_map=encoding_map,
+                    original_data=self.original_data[col]
+                )
+            
+            # Plot correlation matrices
+            numerical_cols = self.data_config['numerical_columns']
+            if numerical_cols:
+                # For after preprocessing, only include numerical columns
+                processed_numerical = [
+                    col for col in self.processed_data.columns
+                    if col in numerical_cols or
+                    not any(col.startswith(f"{cat_col}_") 
+                           for cat_col in self.data_config['categorical_columns'])
+                ]
+                
+                # Create correlation matrix
+                visualizer.plot_correlation_matrix(
+                    data=self.processed_data[processed_numerical],
+                    original_data=self.original_data[numerical_cols]
+                )
+            
+            # Plot target distribution
+            target_col = self.data_config['target_column']
+            visualizer.plot_target_distribution(
+                data=self.original_data[target_col],
+                name=target_col
+            )
+            
+            logger.info(f"Successfully created all plots in {temp_dir}")
+            logger.debug(f"Directory contents: {os.listdir(temp_dir)}")
+            
+            return temp_dir
+        except Exception as e:
+            logger.error(f"Failed to create plots: {str(e)}")
+            logger.error(f"Original data columns: {self.original_data.columns.tolist()}")
+            logger.error(f"Processed data columns: {self.processed_data.columns.tolist()}")
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            raise
+
     def prepare_data(
         self,
         df: Optional[pd.DataFrame] = None
@@ -141,6 +233,9 @@ class DataModule:
         """
         if df is None:
             df = self.load_data()
+            
+        # Store original data
+        self.original_data = df.copy()
         
         # Split features and target
         X = df.drop(self.data_config['target_column'], axis=1)
@@ -151,11 +246,14 @@ class DataModule:
         test_ratio = val_config.get('test_ratio', 0.15)
         val_ratio = val_config.get('val_ratio', 0.15)
         
+        # Get random seed from experiment config
+        random_seed = self.config.get('experiment', {}).get('random_seed', 42)
+        
         # First split: train + validation vs test
         X_trainval, self.X_test, y_trainval, self.y_test = train_test_split(
             X, y,
             test_size=test_ratio,
-            random_state=self.config['random_seed']
+            random_state=random_seed
         )
         
         # Second split: train vs validation
@@ -163,7 +261,7 @@ class DataModule:
         self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(
             X_trainval, y_trainval,
             test_size=val_ratio_adjusted,
-            random_state=self.config['random_seed']
+            random_state=random_seed
         )
         
         # Preprocess training data
@@ -186,7 +284,17 @@ class DataModule:
             self.data_config['numerical_columns']
         )
         
+        # Store processed data
+        self.processed_data = pd.concat([
+            X_train_processed,
+            X_val_processed,
+            X_test_processed
+        ])
+        
         self.feature_names = feature_names
+        
+        # Create distribution plots
+        self.distribution_plots_dir = self._create_distribution_plots()
         
         return (
             X_train_processed.values,
