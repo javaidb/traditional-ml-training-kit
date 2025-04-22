@@ -19,6 +19,7 @@ class DataPreprocessor:
             config: Configuration dictionary containing preprocessing settings
         """
         self.config = config
+        self.data_config = config['data_module']
         self.scalers = {}
         self.encoders = {}
         self.imputers = {}
@@ -35,7 +36,7 @@ class DataPreprocessor:
         Raises:
             ValueError: If missing ratio exceeds configured threshold
         """
-        missing_config = self.config['data_quality']['missing_values']
+        missing_config = self.data_config['data_quality']['missing_values']
         max_missing = missing_config['max_missing_ratio']
         strategy = missing_config['strategy']
         
@@ -69,12 +70,16 @@ class DataPreprocessor:
         Returns:
             pd.DataFrame: DataFrame with handled outliers
         """
-        outlier_config = self.config['data_quality']['outlier_detection']
+        outlier_config = self.data_config['data_quality']['outlier_detection']
         if not outlier_config['enabled']:
             return df
             
         method = outlier_config['method']
         threshold = outlier_config['threshold']
+        
+        # Initialize outlier masks dictionary if not exists
+        if not hasattr(self, 'outlier_masks'):
+            self.outlier_masks = {}
         
         for col in df.select_dtypes(include=['int64', 'float64']).columns:
             if method == 'iqr':
@@ -94,6 +99,8 @@ class DataPreprocessor:
                     f"Found {outliers.sum()} outliers in column {col} "
                     f"using {method} method"
                 )
+                # Store outlier mask
+                self.outlier_masks[col] = outliers
                 
         return df
     
@@ -113,7 +120,7 @@ class DataPreprocessor:
         Returns:
             pd.DataFrame: DataFrame with scaled features
         """
-        scaling_config = self.config['preprocessing']['scaling']
+        scaling_config = self.data_config['preprocessing']['scaling']
         method = scaling_config['method']
         
         if not numerical_columns:
@@ -159,7 +166,7 @@ class DataPreprocessor:
         Returns:
             pd.DataFrame: DataFrame with encoded features
         """
-        encoding_config = self.config['preprocessing']['encoding']
+        encoding_config = self.data_config['preprocessing']['encoding']
         method = encoding_config['method']
         max_categories = encoding_config['max_categories']
         
@@ -167,11 +174,20 @@ class DataPreprocessor:
             return df
             
         df_encoded = df.copy()
+        logger.info(f"Starting categorical encoding for columns: {categorical_columns}")
+        logger.info(f"Input columns: {df.columns.tolist()}")
         
         for col in categorical_columns:
+            logger.info(f"Processing column: {col}")
+            if col not in df.columns:
+                logger.error(f"Column {col} not found in DataFrame")
+                logger.error(f"Available columns: {df.columns.tolist()}")
+                raise ValueError(f"Column {col} not found in DataFrame")
+                
             if fit:
                 # Group rare categories
                 value_counts = df[col].value_counts()
+                logger.info(f"Value counts for {col}: {value_counts}")
                 if len(value_counts) > max_categories:
                     top_categories = value_counts.nlargest(max_categories - 1).index
                     df_encoded[col] = df[col].apply(
@@ -181,23 +197,30 @@ class DataPreprocessor:
             if method == 'one_hot':
                 if fit:
                     dummies = pd.get_dummies(df_encoded[col], prefix=col)
-                    self.encoders[col] = dummies.columns
+                    self.encoders[col] = {
+                        category: f"{col}_{category}"
+                        for category in df_encoded[col].unique()
+                    }
+                    logger.info(f"Created one-hot encoded columns for {col}: {dummies.columns.tolist()}")
                 else:
                     dummies = pd.get_dummies(df_encoded[col], prefix=col)
-                    missing_cols = set(self.encoders[col]) - set(dummies.columns)
+                    missing_cols = set(self.encoders[col].values()) - set(dummies.columns)
                     for missing_col in missing_cols:
                         dummies[missing_col] = 0
-                    dummies = dummies[self.encoders[col]]
+                    dummies = dummies[list(self.encoders[col].values())]
                     
                 df_encoded = pd.concat([df_encoded.drop(col, axis=1), dummies], axis=1)
+                logger.info(f"After encoding {col}, columns are: {df_encoded.columns.tolist()}")
                 
             elif method == 'label':
                 if fit:
+                    unique_values = df_encoded[col].unique()
                     self.encoders[col] = {
-                        val: idx for idx, val in enumerate(df_encoded[col].unique())
+                        val: idx for idx, val in enumerate(unique_values)
                     }
                 df_encoded[col] = df_encoded[col].map(self.encoders[col])
                 
+        logger.info(f"Final encoded columns: {df_encoded.columns.tolist()}")
         return df_encoded
     
     def _select_features(
@@ -214,7 +237,7 @@ class DataPreprocessor:
         Returns:
             Tuple[pd.DataFrame, List[str]]: DataFrame with selected features and list of selected columns
         """
-        feature_selection = self.config['preprocessing']['feature_selection']
+        feature_selection = self.data_config['preprocessing']['feature_selection']
         if not feature_selection['enabled']:
             return df, df.columns.tolist()
             
@@ -271,6 +294,14 @@ class DataPreprocessor:
         # Encode categorical features
         df = self._encode_categorical(df, categorical_columns, fit=True)
         
+        # Verify no object columns remain
+        object_columns = df.select_dtypes(include=['object']).columns
+        if not object_columns.empty:
+            logger.warning(f"Found remaining object columns after encoding: {object_columns}")
+            # Convert any remaining object columns to category
+            for col in object_columns:
+                df[col] = df[col].astype('category')
+        
         # Select features
         df, selected_features = self._select_features(df, numerical_columns)
         
@@ -303,5 +334,13 @@ class DataPreprocessor:
         
         # Encode categorical features
         df = self._encode_categorical(df, categorical_columns, fit=False)
+        
+        # Verify no object columns remain
+        object_columns = df.select_dtypes(include=['object']).columns
+        if not object_columns.empty:
+            logger.warning(f"Found remaining object columns after encoding: {object_columns}")
+            # Convert any remaining object columns to category
+            for col in object_columns:
+                df[col] = df[col].astype('category')
         
         return df 
