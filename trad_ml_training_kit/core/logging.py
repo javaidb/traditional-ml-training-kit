@@ -123,16 +123,16 @@ class MLflowLogger:
             feature_names: List of feature names
         """
         try:
-            # Convert to dictionary if it's a pandas Series
+            # Convert to dictionary if it's a pandas Series and ensure it uses feature_names
             if isinstance(importance, pd.Series):
-                importance_dict = importance.to_dict()
+                importance_dict = {feature_names[i]: val for i, val in enumerate(importance)}
             else:
-                importance_dict = importance
+                importance_dict = {feature_names[i]: val for i, val in enumerate(importance.values())}
             
             # Create feature importance plot
             fig = px.bar(
-                x=list(importance_dict.keys()),
-                y=list(importance_dict.values()),
+                x=feature_names,
+                y=[importance_dict[f] for f in feature_names],
                 title='Feature Importance',
                 labels={'x': 'Feature', 'y': 'Importance'},
                 template='plotly_white'
@@ -147,8 +147,10 @@ class MLflowLogger:
             mlflow.log_figure(fig, "feature_importance.html")
             
             # Log importance values as metrics
-            for feature, imp in importance_dict.items():
-                mlflow.log_metric(f'feature_importance_{feature}', float(imp))
+            for feature in feature_names:
+                # Clean feature name to be MLflow-compatible (replace spaces and special chars with underscores)
+                clean_feature = feature.replace(' ', '_').replace('-', '_').replace('/', '_').lower()
+                mlflow.log_metric(f'feature_importance_{clean_feature}', float(importance_dict[feature]))
             
         except Exception as e:
             self.logger.warning(f"Could not log feature importance plot: {str(e)}")
