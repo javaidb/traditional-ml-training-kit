@@ -19,13 +19,14 @@ services:
     environment:
       - MLFLOW_TRACKING_URI=http://mlflow:5000
       - GIT_PYTHON_REFRESH=quiet
+      - PYTHONPATH=/app
     depends_on:
       - mlflow
     networks:
       - ml-network
     volumes:
-      - ..:/app  # Mount the entire project directory
-      - ./temp_data:/app/trad_ml_example/temp_data  # Mount data directory
+      - ../trad_ml_training_kit:/app/trad_ml_training_kit
+      - ./:/app/trad_ml_example
 
 networks:
   ml-network:
