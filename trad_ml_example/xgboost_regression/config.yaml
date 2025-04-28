@@ -3,15 +3,28 @@ experiment:
   task: "regression"
   dataset: "housing_data"
   include_date_in_run_name: true
+  tags:
+    project: "housing_prediction"
+    team: "ml_team"
+    environment: "development"
+  random_seed: 42
 
 model:
   type: "xgboost"
   params:
-    n_estimators: 100
+    n_estimators: 500
     max_depth: 6
     learning_rate: 0.1
     subsample: 0.8
     colsample_bytree: 0.8
+    min_child_weight: 1
+    gamma: 0
+    reg_alpha: 0
+    reg_lambda: 1
+  early_stopping:
+    enabled: true
+    patience: 10
+    min_delta: 0.001
 
 data_module:
   csv_path: "temp_data/housing_data.csv"
@@ -25,11 +38,42 @@ data_module:
     - "bathrooms"
     - "year_built"
     - "lot_size"
-  train_ratio: 0.7
-  val_ratio: 0.15
-  test_ratio: 0.15
+  preprocessing:
+    scaling:
+      method: "standard"  # Options: standard, minmax, robust
+      target_scaling: true
+    encoding:
+      method: "label"  # Options: one_hot, label, target
+      max_categories: 5  # Max unique values before grouping as 'other'
+    feature_selection:
+      enabled: true
+      method: "correlation"  # Options: correlation, variance
+      threshold: 0.85  # Correlation threshold or variance threshold
+  validation:
+    cross_validation:
+      enabled: true
+      n_folds: 10
+      stratified: true
+    train_ratio: 0.7
+    val_ratio: 0.15
+    test_ratio: 0.15
+  data_quality:
+    outlier_detection:
+      enabled: true
+      method: "iqr"  # Options: iqr, zscore
+      threshold: 1.5  # IQR multiplier or z-score threshold
+    missing_values:
+      strategy: "mean"  # Options: mean, median, most_frequent
+      max_missing_ratio: 0.3  # Maximum ratio of missing values allowed
 
 trainer:
+  optimization:
+    direction: "minimize"  # For RMSE and other error metrics
+  loss_function: "rmse"  # Primary loss function for optimization
+  evaluation_metrics:  # Additional metrics to track
+    - "mae"
+    - "r2"
+    - "mape"
   hyperparameter_tuning:
     enabled: true
-    n_trials: 20 
+    n_trials: 50 

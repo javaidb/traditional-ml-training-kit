@@ -5,6 +5,9 @@ import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression, Lasso
 from sklearn.neighbors import KNeighborsRegressor
+import xgboost as xgb
+import lightgbm as lgb
+import catboost as cb
 
 class BaseModel(ABC):
     """Base class for all traditional ML models."""
@@ -28,100 +31,81 @@ class XGBoostModel(BaseModel):
     """XGBoost model wrapper."""
     
     def __init__(self, params: Dict[str, Any]):
-        """
-        Initialize XGBoost model.
+        """Initialize model with parameters."""
+        self.params = params.copy()
+        # Enable categorical feature support
+        self.params['enable_categorical'] = True
+        self.model = xgb.XGBRegressor(**self.params)
         
-        Args:
-            params: XGBoost parameters
-        """
-        try:
-            import xgboost as xgb
-        except ImportError:
-            raise ImportError("XGBoost is not installed. Install it with 'pip install xgboost'")
-        
-        self.params = params
-        self.model = xgb.XGBRegressor(**params)
-        self.feature_names = None
-    
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
-        """Fit XGBoost model."""
-        self.feature_names = X.columns.tolist()
+    def fit(self, X: Any, y: pd.Series) -> None:
+        """Fit model to data."""
+        # Convert to DataFrame if ndarray
+        if isinstance(X, np.ndarray):
+            X = pd.DataFrame(X)
+        # Convert object dtypes to category
+        for col in X.select_dtypes(include=['object']).columns:
+            X[col] = X[col].astype('category')
         self.model.fit(X, y)
-    
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        
+    def predict(self, X: Any) -> np.ndarray:
         """Make predictions."""
+        # Convert to DataFrame if ndarray
+        if isinstance(X, np.ndarray):
+            X = pd.DataFrame(X)
+        # Convert object dtypes to category
+        for col in X.select_dtypes(include=['object']).columns:
+            X[col] = X[col].astype('category')
         return self.model.predict(X)
     
-    def get_feature_importance(self) -> pd.Series:
+    def get_feature_importance(self) -> Dict[str, float]:
         """Get feature importance scores."""
-        importance = self.model.feature_importances_
-        return pd.Series(importance, index=self.feature_names)
+        if not hasattr(self.model, 'feature_importances_'):
+            raise ValueError("Model not trained yet")
+        return dict(zip(self.model.feature_names_in_, self.model.feature_importances_))
 
 class LightGBMModel(BaseModel):
     """LightGBM model wrapper."""
     
     def __init__(self, params: Dict[str, Any]):
-        """
-        Initialize LightGBM model.
-        
-        Args:
-            params: LightGBM parameters
-        """
-        try:
-            import lightgbm as lgb
-        except ImportError:
-            raise ImportError("LightGBM is not installed. Install it with 'pip install lightgbm'")
-        
+        """Initialize model with parameters."""
         self.params = params
         self.model = lgb.LGBMRegressor(**params)
-        self.feature_names = None
-    
+        
     def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
-        """Fit LightGBM model."""
-        self.feature_names = X.columns
+        """Fit model to data."""
         self.model.fit(X, y)
-    
+        
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         """Make predictions."""
         return self.model.predict(X)
     
-    def get_feature_importance(self) -> pd.Series:
+    def get_feature_importance(self) -> Dict[str, float]:
         """Get feature importance scores."""
-        importance = self.model.feature_importances_
-        return pd.Series(importance, index=self.feature_names)
+        if not hasattr(self.model, 'feature_importances_'):
+            raise ValueError("Model not trained yet")
+        return dict(zip(self.model.feature_names_in_, self.model.feature_importances_))
 
 class CatBoostModel(BaseModel):
     """CatBoost model wrapper."""
     
     def __init__(self, params: Dict[str, Any]):
-        """
-        Initialize CatBoost model.
-        
-        Args:
-            params: CatBoost parameters
-        """
-        try:
-            import catboost as cb
-        except ImportError:
-            raise ImportError("CatBoost is not installed. Install it with 'pip install catboost'")
-        
+        """Initialize model with parameters."""
         self.params = params
         self.model = cb.CatBoostRegressor(**params)
-        self.feature_names = None
-    
+        
     def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
-        """Fit CatBoost model."""
-        self.feature_names = X.columns
-        self.model.fit(X, y, verbose=False)
-    
+        """Fit model to data."""
+        self.model.fit(X, y)
+        
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         """Make predictions."""
         return self.model.predict(X)
     
-    def get_feature_importance(self) -> pd.Series:
+    def get_feature_importance(self) -> Dict[str, float]:
         """Get feature importance scores."""
-        importance = self.model.feature_importances_
-        return pd.Series(importance, index=self.feature_names)
+        if not hasattr(self.model, 'feature_importances_'):
+            raise ValueError("Model not trained yet")
+        return dict(zip(self.model.feature_names_, self.model.feature_importances_))
 
 class RandomForestModel(BaseModel):
     """Random Forest model wrapper."""
@@ -236,31 +220,21 @@ class KNNModel(BaseModel):
         """KNN does not have built-in feature importance."""
         return None
 
-def get_model_by_name(model_type: str, params: Dict[str, Any]) -> BaseModel:
-    """
-    Get model instance by type name.
-    
-    Args:
-        model_type: Type of model ('xgboost', 'lightgbm', 'catboost', 'randomforest', 
-                                 'linear', 'lasso', 'knn')
-        params: Model parameters
-        
-    Returns:
-        Model instance
-    """
-    models = {
-        'xgboost': XGBoostModel,
-        'lightgbm': LightGBMModel,
-        'catboost': CatBoostModel,
-        'randomforest': RandomForestModel,
-        'linear': LinearRegressionModel,
-        'lasso': LassoModel,
-        'knn': KNNModel
-    }
-    
-    model_type_lower = model_type.lower()
-    if model_type_lower not in models:
-        available_models = ", ".join(models.keys())
-        raise ValueError(f"Unknown model type: {model_type}. Available models: {available_models}")
-    
-    return models[model_type_lower](params) 
+def get_model_by_name(name: str, params: Dict[str, Any]) -> BaseModel:
+    """Get model instance by name."""
+    if name == 'xgboost':
+        return XGBoostModel(params)
+    elif name == 'lightgbm':
+        return LightGBMModel(params)
+    elif name == 'catboost':
+        return CatBoostModel(params)
+    elif name == 'randomforest':
+        return RandomForestModel(params)
+    elif name == 'linear':
+        return LinearRegressionModel(params)
+    elif name == 'lasso':
+        return LassoModel(params)
+    elif name == 'knn':
+        return KNNModel(params)
+    else:
+        raise ValueError(f"Unknown model type: {name}") 

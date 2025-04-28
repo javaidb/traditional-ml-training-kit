@@ -6,10 +6,17 @@ from typing import Dict, Any, Optional, Callable, List
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import logging
 from .models import get_model_by_name
-from .data_handler import DataHandler
+from .data import DataModule
 from .logging import MLflowLogger
 from datetime import datetime
 import pytz
+import shutil
+import os
+from pathlib import Path
+import requests
+import time
+
+logger = logging.getLogger(__name__)
 
 class ModelTrainer:
     """Trainer class for traditional ML models."""
@@ -19,16 +26,13 @@ class ModelTrainer:
         config: Dict[str, Any],
         experiment_name: Optional[str] = None
     ):
-        """
-        Initialize the trainer.
-        
-        Args:
-            config: Configuration dictionary
-            experiment_name: Optional MLflow experiment name override
-        """
+        """Initialize trainer."""
         self.config = config
         self.experiment_name = experiment_name or config['experiment']['name']
         self.logger = logging.getLogger(__name__)
+        
+        # Verify MLflow connection
+        self._verify_mlflow_connection()
         
         # Initialize MLflow logger
         self.mlflow_logger = MLflowLogger(
@@ -36,6 +40,31 @@ class ModelTrainer:
             experiment_tags=config.get('experiment', {}).get('tags', {}),
             model_artifact_path=config.get('model', {}).get('artifact_path', 'model')
         )
+    
+    def _verify_mlflow_connection(self, max_retries: int = 5) -> None:
+        """Verify connection to MLflow server.
+        
+        Args:
+            max_retries: Maximum number of connection attempts
+        
+        Raises:
+            ConnectionError: If unable to connect to MLflow server
+        """
+        mlflow_uri = os.getenv('MLFLOW_TRACKING_URI', 'http://localhost:5000')
+        self.logger.info(f"Verifying connection to MLflow server at {mlflow_uri}")
+        
+        for i in range(max_retries):
+            try:
+                response = requests.get(f"{mlflow_uri}/health")
+                if response.status_code == 200:
+                    self.logger.info("Successfully connected to MLflow server")
+                    return
+            except requests.exceptions.RequestException as e:
+                self.logger.warning(f"Attempt {i+1}/{max_retries} failed: {str(e)}")
+                if i < max_retries - 1:
+                    time.sleep(2 ** i)  # Exponential backoff
+        
+        raise ConnectionError(f"Failed to connect to MLflow server at {mlflow_uri}")
     
     def _get_metric_functions(self) -> Dict[str, Callable]:
         """Get metric functions based on task type."""
@@ -110,14 +139,12 @@ class ModelTrainer:
         
         # Create and train model
         model = get_model_by_name(model_type, params)
-        model.fit(self.data_handler.X_train, self.data_handler.y_train)
+        X_train, y_train = self.data_module.get_train_data()
+        X_val, y_val = self.data_module.get_val_data()
+        model.fit(X_train, y_train)
         
         # Evaluate on validation set
-        metrics = self._evaluate_model(
-            model,
-            self.data_handler.X_val,
-            self.data_handler.y_val
-        )
+        metrics = self._evaluate_model(model, X_val, y_val)
         
         # Log trial metrics
         self.mlflow_logger.log_metrics(metrics, step=trial.number)
@@ -127,18 +154,19 @@ class ModelTrainer:
 
     def train(self) -> Any:
         """Train the model with hyperparameter optimization."""
-        # Set up data handler
-        data_config = self.config['data_module']
-        self.data_handler = DataHandler(
-            csv_path=data_config['csv_path'],
-            target_column=data_config['target_column'],
-            categorical_columns=data_config.get('categorical_columns'),
-            numerical_columns=data_config.get('numerical_columns'),
-            train_ratio=data_config.get('train_ratio', 0.7),
-            val_ratio=data_config.get('val_ratio', 0.15),
-            test_ratio=data_config.get('test_ratio', 0.15)
-        )
-        self.data_handler.setup()
+        # Set up data module
+        self.data_module = DataModule(self.config)
+        
+        # Prepare data
+        (
+            X_train,
+            X_val,
+            X_test,
+            y_train,
+            y_val,
+            y_test,
+            feature_names
+        ) = self.data_module.prepare_data()
         
         # Start MLflow run using the logger
         with self.mlflow_logger:
@@ -146,17 +174,47 @@ class ModelTrainer:
             
             # Log data config
             self.mlflow_logger.log_params({
-                'data_path': data_config['csv_path'],
-                'target_column': data_config['target_column'],
-                'train_ratio': data_config.get('train_ratio', 0.7),
-                'val_ratio': data_config.get('val_ratio', 0.15),
-                'test_ratio': data_config.get('test_ratio', 0.15),
-                'n_features': len(self.data_handler.feature_names),
-                'n_samples': len(self.data_handler.X_train) + len(self.data_handler.X_val) + len(self.data_handler.X_test)
+                'data_path': self.config['data_module']['csv_path'],
+                'target_column': self.config['data_module']['target_column'],
+                'train_ratio': self.config['data_module'].get('validation', {}).get('train_ratio', 0.7),
+                'val_ratio': self.config['data_module'].get('validation', {}).get('val_ratio', 0.15),
+                'test_ratio': self.config['data_module'].get('validation', {}).get('test_ratio', 0.15),
+                'n_features': len(feature_names),
+                'n_samples': len(X_train) + len(X_val) + len(X_test)
             })
             
             # Log feature names
-            self.mlflow_logger.log_params({'feature_names': ','.join(self.data_handler.feature_names)})
+            self.mlflow_logger.log_params({'feature_names': ','.join(feature_names)})
+            
+            # Log data distribution plots
+            try:
+                dist_dir = self.data_module.distribution_plots_dir
+                if not os.path.exists(dist_dir):
+                    raise FileNotFoundError(f"Distribution plots directory not found: {dist_dir}")
+                
+                self.logger.info(f"Logging data distribution plots from {dist_dir}")
+                self.logger.debug(f"Directory contents before logging: {os.listdir(dist_dir)}")
+                
+                # Verify MLflow artifact logging is working
+                test_file = os.path.join(dist_dir, "test.txt")
+                with open(test_file, "w") as f:
+                    f.write("Test artifact logging")
+                
+                mlflow.log_artifact(test_file, "data_distributions")
+                self.logger.info("Test artifact logging successful")
+                
+                # Log all distribution plots
+                mlflow.log_artifacts(dist_dir, "data_distributions")
+                self.logger.info("Successfully logged data distribution plots to MLflow")
+                
+                # Clean up temporary directory
+                shutil.rmtree(dist_dir)
+                self.logger.info(f"Cleaned up temporary directory: {dist_dir}")
+            except Exception as e:
+                self.logger.error(f"Failed to log data distribution plots: {str(e)}")
+                self.logger.error(f"MLflow tracking URI: {mlflow.get_tracking_uri()}")
+                self.logger.error(f"Current working directory: {os.getcwd()}")
+                raise
             
             # Hyperparameter optimization
             if self.config['trainer']['hyperparameter_tuning']['enabled']:
@@ -178,46 +236,50 @@ class ModelTrainer:
             
             # Train final model with best parameters
             model = get_model_by_name(self.config['model']['type'], best_params)
-            model.fit(self.data_handler.X_train, self.data_handler.y_train)
+            model.fit(X_train, y_train)
             
             # Evaluate model
             train_metrics = self._evaluate_model(
                 model,
-                self.data_handler.X_train,
-                self.data_handler.y_train,
+                X_train,
+                y_train,
                 prefix='train_'
             )
             val_metrics = self._evaluate_model(
                 model,
-                self.data_handler.X_val,
-                self.data_handler.y_val,
+                X_val,
+                y_val,
                 prefix='val_'
             )
             test_metrics = self._evaluate_model(
                 model,
-                self.data_handler.X_test,
-                self.data_handler.y_test,
+                X_test,
+                y_test,
                 prefix='test_'
             )
             
             # Log all metrics
-            all_metrics = {**train_metrics, **val_metrics, **test_metrics}
+            all_metrics = {
+                **train_metrics,
+                **val_metrics,
+                **test_metrics
+            }
             self.mlflow_logger.log_metrics(all_metrics)
             
             # Log prediction plots
             self.mlflow_logger.log_prediction_plots(
-                self.data_handler.y_train,
-                model.predict(self.data_handler.X_train),
+                y_train,
+                model.predict(X_train),
                 'train'
             )
             self.mlflow_logger.log_prediction_plots(
-                self.data_handler.y_val,
-                model.predict(self.data_handler.X_val),
+                y_val,
+                model.predict(X_val),
                 'val'
             )
             self.mlflow_logger.log_prediction_plots(
-                self.data_handler.y_test,
-                model.predict(self.data_handler.X_test),
+                y_test,
+                model.predict(X_test),
                 'test'
             )
             
@@ -225,7 +287,7 @@ class ModelTrainer:
             if hasattr(model, 'get_feature_importance'):
                 self.mlflow_logger.log_feature_importance(
                     model.get_feature_importance(),
-                    self.data_handler.feature_names
+                    feature_names
                 )
             
             # Log model with signature
@@ -233,7 +295,7 @@ class ModelTrainer:
                 self.mlflow_logger.log_model(
                     model=model.model,
                     model_name="model",
-                    input_example=self.data_handler.X_train.iloc[:5],
+                    input_example=X_train.iloc[:5],
                     registered_model_name=f"{self.config['model']['type']}_{self.experiment_name}"
                 )
             except Exception as e:
